@@ -28,13 +28,17 @@ if uploaded_file is not None:
     y = df[existing_targets]
 
     # NaNs bereinigen
-    df_clean = pd.concat([X, y], axis=1).dropna()
+    df_clean = pd.concat([X, y], axis=1).dropna(subset=existing_targets, how="any")
     X_clean = df_clean.drop(columns=existing_targets)
-    y_clean = df_clean[existing_targets].astype(float)
+
+    # Zielwerte robust konvertieren
+    y_clean = df_clean[existing_targets].apply(pd.to_numeric, errors='coerce')
+    df_clean = df_clean[y_clean.notnull().all(axis=1)]
+    y_clean = y_clean.dropna()
 
     # One-Hot-Encoding
     X_encoded = pd.get_dummies(X_clean)
-    X_encoded_clean = X_encoded.copy()
+    X_encoded_clean = X_encoded.loc[y_clean.index]
 
     # Modell trainieren
     modell = MultiOutputRegressor(RandomForestRegressor(n_estimators=150, random_state=42))
