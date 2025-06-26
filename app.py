@@ -3,105 +3,89 @@ import pandas as pd
 import numpy as np
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.multioutput import MultiOutputRegressor
-from sklearn.inspection import PartialDependenceDisplay
+from sklearn.inspection import partial_dependence
 import matplotlib.pyplot as plt
-import io
+import seaborn as sns
 
-st.set_page_config(layout="wide")
+# CSV-Datei laden
+df = pd.read_csv("/mnt/data/rezeptdaten.csv", sep=",", decimal=",")
 
-st.title("🎨 KI-Vorhersage für Lackrezepturen")
+# Zielgrößen festlegen
+targets = [
+    "KostenGesamtkg", "Viskositätlowshear", "Viskositätmidshear",
+    "Brookfield", "Glanz20", "Glanz60", "Glanz85", "Kratzschutz"
+]
 
-# 📁 CSV-Datei hochladen
-uploaded_file = st.sidebar.file_uploader("CSV-Datei hochladen", type=["csv"])
-if uploaded_file is not None:
-    df = pd.read_csv(uploaded_file, sep=";|,", engine="python")
-    
-    # 🔁 Komma in Punkt konvertieren (numerische Felder)
-    df = df.applymap(lambda x: str(x).replace(",", ".") if isinstance(x, str) else x)
-    
-    # 🧹 Alle Spaltennamen vereinfachen
-    df.columns = [col.strip().replace(" ", "").replace("ß", "ss") for col in df.columns]
+# Verfügbare Spalten prüfen
+available_targets = [t for t in targets if t in df.columns]
+if not available_targets:
+    st.error("❌ Keine gültigen Zielspalten in den Daten gefunden.")
+    st.stop()
 
-    # 🔢 Versuchen, alle numerischen Felder in float zu wandeln
-    df = df.apply(pd.to_numeric, errors="ignore")
+# Eingabe- und Zielgrößen trennen
+X = df.drop(columns=available_targets)
+y = df[available_targets]
 
-    # 🎯 Zielspalten definieren (angepasst an deine CSV)
-    zielspalten = [
-        "KostenGesamtkg", "Viskositaetlowshear", "Viskositaetmidshear", "Brookfield",
-        "Glanz20", "Glanz60", "Glanz85", "Kratzschutz"
-    ]
-    existing_targets = [t for t in zielspalten if t in df.columns]
+# NaNs entfernen
+X_clean = X.dropna()
+y_clean = y.loc[X_clean.index]
 
-    if len(existing_targets) == 0:
-        st.error("❌ Keine gültigen Zielspalten gefunden.")
-        st.stop()
+# Modell trainieren
+modell = MultiOutputRegressor(RandomForestRegressor(n_estimators=150, random_state=42))
+modell.fit(X_clean, y_clean)
 
-    # 🧪 Eingabe / Ziel trennen
-    X = df.drop(columns=existing_targets)
-    y = df[existing_targets].apply(pd.to_numeric, errors="coerce")
+# Streamlit UI
+st.title("🎨 KI-Vorhersage und Analyse von Lackrezepturen")
+st.markdown("Wähle Zielgrößen zur Analyse, passe Eingaben an und analysiere Zusammenhänge.")
 
-    # NaN behandeln
-    valid_idx = y.dropna().index
-    X_clean = X.loc[valid_idx]
-    y_clean = y.loc[valid_idx]
+# Zielgrößen-Auswahl
+selected_targets = st.multiselect("🎯 Zielgrößen auswählen", available_targets, default=["Brookfield"])
 
-    # One-Hot-Encoding für kategoriale Daten
-    X_encoded = pd.get_dummies(X_clean)
-    
-    st.write(f"✅ Verfügbare Trainingsdaten: {X_encoded.shape[0]} Zeilen")
+# Eingabewerte anpassen
+st.sidebar.header("🔧 Rezeptureingaben")
+user_input = {}
+for col in X.columns:
+    min_val, max_val = float(X[col].min()), float(X[col].max())
+    mean_val = float(X[col].mean())
+    user_input[col] = st.sidebar.slider(col, min_val, max_val, mean_val)
 
-    # 📊 Auswahl Zielgröße für Analyse
-    ziel = st.sidebar.selectbox("Zielgröße auswählen", existing_targets)
+input_df = pd.DataFrame([user_input])
 
-    # 🧠 Modell trainieren
-    modell = MultiOutputRegressor(RandomForestRegressor(n_estimators=150, random_state=42))
-    modell.fit(X_encoded, y_clean)
+# Vorhersage
+prediction = modell.predict(input_df)[0]
 
-    # 🎛️ Benutzer-Eingabe
-    st.sidebar.header("🔧 Eingabewerte")
-    user_input = {}
-    for col in X.columns:
-        if np.issubdtype(df[col].dtype, np.number):
-            min_val, max_val = float(df[col].min()), float(df[col].max())
-            user_input[col] = st.sidebar.slider(col, min_val, max_val, float(df[col].mean()))
-        else:
-            user_input[col] = st.sidebar.selectbox(col, df[col].dropna().unique())
+# Vorhersage anzeigen
+st.subheader("📈 Vorhergesagte Zielgrößen")
+for i, ziel in enumerate(available_targets):
+    if ziel in selected_targets:
+        st.metric(label=ziel, value=round(prediction[i], 2))
 
-    input_df = pd.DataFrame([user_input])
-    input_encoded = pd.get_dummies(input_df)
-    for col in X_encoded.columns:
-        if col not in input_encoded:
-            input_encoded[col] = 0
-    input_encoded = input_encoded[X_encoded.columns]
-
-    # 🔮 Vorhersage
-    vorhersage = modell.predict(input_encoded)[0]
-    st.subheader("📈 Vorhersageergebnisse")
-    for i, z in enumerate(existing_targets):
-        st.metric(z, round(vorhersage[i], 3))
-
-    # 🔍 Partial Dependence Plot
-    st.subheader("📊 Einflussfaktoren (Partial Dependence)")
-    top_features = st.multiselect("Welche Eingabefelder analysieren?", list(X_encoded.columns), default=list(X_encoded.columns[:3]))
-
-    if len(top_features) > 0:
-        fig, ax = plt.subplots(figsize=(12, 6 * len(top_features)))
-        PartialDependenceDisplay.from_estimator(modell, X_encoded, features=top_features, target=existing_targets.index(ziel), ax=ax)
+# Analyse: Partial Dependence Plots
+st.subheader("🔍 Einfluss einzelner Merkmale auf Zielgrößen")
+for ziel in selected_targets:
+    ziel_idx = available_targets.index(ziel)
+    for feature in X.columns:
+        st.markdown(f"**Einfluss von {feature} auf {ziel}:**")
+        fig, ax = plt.subplots()
+        pd_result = partial_dependence(modell, X_clean, features=[X.columns.get_loc(feature)], target=ziel_idx)
+        ax.plot(pd_result['values'][0], pd_result['average'][0])
+        ax.set_xlabel(feature)
+        ax.set_ylabel(ziel)
+        ax.grid(True)
         st.pyplot(fig)
 
-    # 💬 Freitextfrage (nur lokal mit Regeln)
-    st.subheader("💬 Fragen stellen (Regelbasierter Assistent)")
-    frage = st.text_input("Was möchtest du wissen?")
-    if frage:
-        antwort = ""
-        if "glanz" in frage.lower():
-            antwort = "Der Glanzwert sinkt bei höherem Einsatz von Sylysia (Mattierungsmittel)."
-        elif "kosten" in frage.lower():
-            antwort = "Die Gesamtkosten steigen i. d. R. mit mehr Lackslurry oder teuren Additiven."
-        elif "viskosität" in frage.lower():
-            antwort = "Die Viskosität wird u. a. von Acrysol-Additiven beeinflusst."
-        else:
-            antwort = "Diese Frage kann aktuell nur regelbasiert beantwortet werden."
-        st.success(antwort)
+# Optional: Freitext-Erklärungen (lokal regelbasiert)
+st.subheader("🧠 Erklärung durch einfache Regeln")
+rules = []
+if user_input.get("Sylysia256", 0) > X["Sylysia256"].mean():
+    rules.append("🔻 Hoher Einsatz von Mattierungsmittel (Sylysia256) kann zu geringerem Glanz führen.")
+if user_input.get("Lackslurry", 0) > X["Lackslurry"].mean():
+    rules.append("💰 Mehr Lackslurry kann die Kosten steigern.")
+if user_input.get("AcrysolRM2020E", 0) > X["AcrysolRM2020E"].mean():
+    rules.append("💧 Höherer Einsatz von Rheologieadditiven beeinflusst Viskosität.")
+
+if rules:
+    for r in rules:
+        st.info(r)
 else:
-    st.info("⬅️ Bitte lade eine CSV-Datei hoch.")
+    st.write("Keine speziellen Regeln für die aktuelle Eingabe erkannt.")
