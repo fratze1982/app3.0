@@ -1,145 +1,140 @@
-import streamlit as st
 import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
+import streamlit as st
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.multioutput import MultiOutputRegressor
+from sklearn.inspection import partial_dependence
+import matplotlib.pyplot as plt
 
-# ------------------------------
-# Datei laden und vorbereiten
-# ------------------------------
+# -------------------------------
+# CSV-Daten laden
+# -------------------------------
+st.set_page_config(layout="wide")
 st.title("🎨 KI-Vorhersage für Lackrezepturen")
+csv_file = "rezeptdaten.csv"
+df = pd.read_csv(csv_file, encoding="utf-8", sep=";")
 
-uploaded_file = st.file_uploader("Lade deine CSV-Datei hoch", type="csv")
+# -------------------------------
+# Zielgrößen definieren (anpassbar)
+# -------------------------------
+all_targets = [
+    "KostenGesamtkg", "Viskositätlowshear", "Viskositätmidshear", "Brookfield",
+    "Glanz20", "Glanz60", "Glanz85", "Kratzschutz"
+]
+existing_targets = [col for col in all_targets if col in df.columns]
 
-if uploaded_file is not None:
-    df = pd.read_csv(uploaded_file, sep=";", encoding="utf-8")
-    df.columns = df.columns.str.strip().str.replace(" ", "").str.replace("\t", "")
+# -------------------------------
+# Eingabe- und Ausgabedaten trennen
+# -------------------------------
+df_clean = df.dropna(subset=existing_targets).copy()
+y_clean = df_clean[existing_targets].apply(pd.to_numeric, errors='coerce')
+X = df_clean.drop(columns=existing_targets)
 
-    # Zielspalten
-    targets = [
-        "Glanz20", "Glanz60", "Glanz85",
-        "Viskositätlowshear", "Viskositätmidshear", "Brookfield",
-        "KostenGesamtkg", "Kratzschutz"
-    ]
-    existing_targets = [t for t in targets if t in df.columns]
+# Kategorische und numerische Spalten identifizieren
+kategorisch = X.select_dtypes(include="object").columns.tolist()
+numerisch = X.select_dtypes(exclude="object").columns.tolist()
 
-    X = df.drop(columns=existing_targets, errors="ignore")
-    y = df[existing_targets]
+# One-Hot-Encoding
+X_encoded = pd.get_dummies(X)
+X_encoded_clean = X_encoded.loc[y_clean.dropna().index]
+y_clean = y_clean.dropna()
 
-    # NaNs bereinigen
-    df_clean = pd.concat([X, y], axis=1).dropna(subset=existing_targets, how="any")
-    X_clean = df_clean.drop(columns=existing_targets)
+# Abbruch wenn Daten leer
+if len(X_encoded_clean) == 0 or len(y_clean) == 0:
+    st.error("❌ Keine gültigen Trainingsdaten verfügbar. Bitte überprüfe Zielspalten und Werte.")
+    st.stop()
 
-    # Zielwerte robust konvertieren
-    y_clean = df_clean[existing_targets].apply(pd.to_numeric, errors='coerce')
-    df_clean = df_clean[y_clean.notnull().all(axis=1)]
-    y_clean = y_clean.dropna()
+# -------------------------------
+# Modell trainieren
+# -------------------------------
+modell = MultiOutputRegressor(RandomForestRegressor(n_estimators=150, random_state=42))
+modell.fit(X_encoded_clean, y_clean)
 
-    # One-Hot-Encoding
-    X_encoded = pd.get_dummies(X_clean)
-    X_encoded_clean = X_encoded.loc[y_clean.index]
+# -------------------------------
+# Zielgrößen-Auswahl für Analyse
+# -------------------------------
+st.sidebar.subheader("🎯 Zielgrößen auswählen")
+selected_targets = st.sidebar.multiselect("Zielgrößen", existing_targets, default=existing_targets[:2])
 
-    # Modell trainieren
-    modell = MultiOutputRegressor(RandomForestRegressor(n_estimators=150, random_state=42))
-    modell.fit(X_encoded_clean, y_clean)
+# -------------------------------
+# Eingabeformular für Nutzer
+# -------------------------------
+st.sidebar.subheader("🧪 Neue Rezeptur eingeben")
+user_input = {}
+for col in numerisch:
+    min_val, max_val, mean_val = float(df[col].min()), float(df[col].max()), float(df[col].mean())
+    user_input[col] = st.sidebar.slider(col, min_val, max_val, mean_val)
 
-    # Numerisch/kategorisch trennen
-    kategorisch = X_clean.select_dtypes(include="object").columns.tolist()
-    numerisch = X_clean.select_dtypes(exclude="object").columns.tolist()
+for col in kategorisch:
+    user_input[col] = st.sidebar.selectbox(col, sorted(df[col].dropna().unique()))
 
-    # Sidebar Eingabe
-    st.sidebar.header("🔧 Eingabewerte anpassen")
-    user_input = {}
-    for col in numerisch:
-        min_val, max_val, mean_val = float(df[col].min()), float(df[col].max()), float(df[col].mean())
-        user_input[col] = st.sidebar.slider(col, min_val, max_val, mean_val)
-    for col in kategorisch:
-        user_input[col] = st.sidebar.selectbox(col, sorted(df[col].dropna().unique()))
+input_df = pd.DataFrame([user_input])
+input_encoded = pd.get_dummies(input_df)
 
-    # Eingabe vorbereiten
-    input_df = pd.DataFrame([user_input])
-    input_encoded = pd.get_dummies(input_df)
-    for col in X_encoded_clean.columns:
-        if col not in input_encoded.columns:
-            input_encoded[col] = 0
-    input_encoded = input_encoded[X_encoded_clean.columns]
+# Fehlende Spalten auffüllen
+for col in X_encoded.columns:
+    if col not in input_encoded.columns:
+        input_encoded[col] = 0
+input_encoded = input_encoded[X_encoded.columns]
 
-    prediction = modell.predict(input_encoded)[0]
+# -------------------------------
+# Vorhersage für Eingabe anzeigen
+# -------------------------------
+prediction = modell.predict(input_encoded)[0]
+st.subheader("🔮 Vorhergesagte Eigenschaften")
+cols = st.columns(len(selected_targets))
+for i, ziel in enumerate(selected_targets):
+    if ziel in existing_targets:
+        val = prediction[existing_targets.index(ziel)]
+        cols[i].metric(label=ziel, value=round(val, 2))
 
-    st.subheader("🔮 Vorhergesagte Eigenschaften")
-    for i, ziel in enumerate(existing_targets):
-        st.metric(label=ziel, value=round(prediction[i], 2))
+# -------------------------------
+# 📊 Partial Dependence Plot
+# -------------------------------
+st.markdown("---")
+st.subheader("📈 Abhängigkeitsanalyse einzelner Variablen")
 
-    # Exportbereich
-    export_data = input_df.copy()
-    for i, ziel in enumerate(existing_targets):
-        export_data[f"Vorhersage: {ziel}"] = prediction[i]
-    csv = export_data.to_csv(index=False).encode("utf-8")
-    st.download_button("📥 Einzelvorhersage als CSV", csv, file_name="rezeptur_vorhersage.csv", mime="text/csv")
+with st.expander("🧪 Variable analysieren"):
+    feature = st.selectbox("Feature für Analyse auswählen", X_encoded_clean.columns)
+    target_name = st.selectbox("Zielgröße für PDP", existing_targets)
+    target_idx = existing_targets.index(target_name)
+    feat_idx = X_encoded_clean.columns.get_loc(feature)
 
-    # ----------------------------------------
-    # Mehrere Varianten eingeben
-    # ----------------------------------------
-    st.markdown("---")
-    st.subheader("📊 Vergleich mehrerer Rezeptvarianten")
-    sample_variants = pd.DataFrame([user_input]*3)
-    sample_variants.iloc[1, sample_variants.columns.get_loc(numerisch[0])] *= 0.9
-    sample_variants.iloc[2, sample_variants.columns.get_loc(numerisch[0])] *= 1.1
-
-    edited_df = st.data_editor(sample_variants, use_container_width=True, num_rows="dynamic")
-
-    if st.button("🚀 Vorhersage starten für alle Varianten"):
-        encoded_variants = pd.get_dummies(edited_df)
-        for col in X_encoded_clean.columns:
-            if col not in encoded_variants.columns:
-                encoded_variants[col] = 0
-        encoded_variants = encoded_variants[X_encoded_clean.columns]
-
-        predictions = modell.predict(encoded_variants)
-        results_df = edited_df.copy()
-        for i, ziel in enumerate(existing_targets):
-            results_df[f"Vorhersage: {ziel}"] = predictions[:, i]
-
-        st.dataframe(results_df, use_container_width=True)
-
-        csv = results_df.to_csv(index=False).encode("utf-8")
-        st.download_button("📥 Alle Vorhersagen als CSV", data=csv, file_name="rezeptur_vergleich.csv", mime="text/csv")
-
-        # ----------------------------------------
-        # Visualisierung
-        # ----------------------------------------
-        st.markdown("---")
-        st.subheader("📈 Visualisierung der Abhängigkeiten")
-        x_axis = st.selectbox("X-Achse", results_df.columns)
-        y_axis = st.selectbox("Y-Achse", results_df.columns, index=results_df.columns.get_loc("Vorhersage: Glanz60") if "Vorhersage: Glanz60" in results_df.columns else 0)
+    try:
+        pdp_result = partial_dependence(modell, X_encoded_clean, features=[feat_idx], target=target_idx)
+        values = pdp_result["values"][0]
+        ave_pred = pdp_result["average"][0]
 
         fig, ax = plt.subplots()
-        ax.scatter(results_df[x_axis], results_df[y_axis], color="steelblue")
-        ax.set_xlabel(x_axis)
-        ax.set_ylabel(y_axis)
-        ax.set_title(f"{y_axis} vs. {x_axis}")
+        ax.plot(values, ave_pred, marker="o")
+        ax.set_xlabel(feature)
+        ax.set_ylabel(f"{target_name} (mittlere Vorhersage)")
+        ax.set_title(f"Partial Dependence: {target_name} vs {feature}")
         st.pyplot(fig)
+    except Exception as e:
+        st.warning(f"⚠️ Keine PDP möglich: {e}")
 
-        # ----------------------------------------
-        # Fragenfeld (lokale Regel-Antworten)
-        # ----------------------------------------
-        st.markdown("---")
-        st.subheader("🧠 Fragen zur Rezeptur stellen")
-        user_question = st.text_input("Was möchtest du über die Rezeptur wissen?")
+# -------------------------------
+# 🗨️ Regelbasiertes Fragefeld
+# -------------------------------
+st.markdown("---")
+st.subheader("🧠 Regelbasierte Analyse")
+frage = st.text_input("Stelle eine Frage zur Rezeptur")
 
-        if user_question:
-            antwort = f"Deine Frage war: *{user_question}*\n\n📊 Basierend auf den aktuellen Daten:\n"
-            if "Sylysia256" in results_df.columns and "Vorhersage: Glanz60" in results_df.columns:
-                corr = results_df["Sylysia256"].corr(results_df["Vorhersage: Glanz60"])
-                richtung = "steigt" if corr > 0 else "sinkt"
-                antwort += f"- Wenn du mehr **Sylysia256** einsetzt, {richtung} der **Glanz60** tendenziell (Korrelation: {corr:.2f}).\n"
+if frage:
+    antwort = ""
+    frage_lower = frage.lower()
+    if "lackslurry" in frage_lower and "kosten" in frage_lower:
+        antwort = "💡 Höherer Lackslurry-Anteil erhöht meist die Rohstoffkosten pro kg."
+    elif "sylysia" in frage_lower:
+        antwort = "💡 Sylysia wird als Mattierungsmittel verwendet – hoher Anteil senkt den Glanz und kann Viskosität erhöhen."
+    elif "glanz" in frage_lower and "viskosität" in frage_lower:
+        antwort = "🔁 Zwischen Glanz und Viskosität gibt es häufig einen Zielkonflikt – starke Mattierung erhöht oft die Viskosität."
+    else:
+        antwort = "🤔 Die Frage konnte nicht automatisch beantwortet werden. Bitte spezifischer formulieren."
+    st.info(antwort)
 
-            kosten_cols = [col for col in results_df.columns if "Kosten" in col]
-            if kosten_cols:
-                teuerste = results_df[kosten_cols].mean().idxmax()
-                antwort += f"- Die größten mittleren Kosten entstehen durch **{teuerste}**.\n"
-
-            st.markdown(antwort)
-else:
-    st.info("⬆️ Bitte lade zuerst eine CSV-Datei hoch.")
+# -------------------------------
+# Export
+# -------------------------------
+st.markdown("---")
+st.download_button("📥 Eingabe & Vorhersage als CSV", data=input_df.assign(**{ziel: prediction[i] for i, ziel in enumerate(existing_targets)}).to_csv(index=False), file_name="vorhersage.csv", mime="text/csv")
