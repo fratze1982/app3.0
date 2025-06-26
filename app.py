@@ -12,14 +12,14 @@ st.set_page_config(page_title="KI-Vorhersage für Lackrezepturen", layout="wide"
 st.title("🎨 KI-Vorhersage für Lackrezepturen")
 
 # --- Datei-Upload ---
-uploaded_file = st.file_uploader("📁 CSV-Datei hochladen", type=["csv"])
+uploaded_file = st.file_uploader("📁 CSV-Datei hochladen (mit ; getrennt)", type=["csv"])
 if uploaded_file is None:
     st.warning("Bitte lade eine CSV-Datei hoch.")
     st.stop()
 
 # --- CSV einlesen ---
 try:
-    df = pd.read_csv(uploaded_file, sep=",", decimal=",")
+    df = pd.read_csv(uploaded_file, sep=";", decimal=",")  # ← wichtig!
     st.success("✅ Datei erfolgreich geladen.")
 except Exception as e:
     st.error(f"❌ Fehler beim Einlesen der Datei: {e}")
